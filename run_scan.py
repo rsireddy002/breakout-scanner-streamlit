@@ -54,8 +54,9 @@ def save_alerted_signals(signals):
 
 
 def main():
-    if not is_market_hours():
-        print("Outside market hours (IST) — skipping scan.")
+    force = os.getenv("FORCE_SCAN", "").strip().lower() in ("true", "1", "yes")
+    if not force and not is_market_hours():
+        print("Outside market hours (IST) — skipping scan. (set FORCE_SCAN=true to override)")
         return
 
     tickers = get_fno_tickers()
