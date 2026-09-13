@@ -127,25 +127,33 @@ def _get_token():
     return token
 
 
-def _upstox_get(url, params=None):
+def _upstox_get(url, params=None, max_retries=4):
     token = _get_token()
-    resp = requests.get(
-        url,
-        params=params,
-        headers={"Accept": "application/json", "Authorization": f"Bearer {token}"},
-        timeout=15,
-    )
-    if resp.status_code == 401:
-        raise UpstoxError(
-            "Upstox access token expired or invalid — refresh UPSTOX_ACCESS_TOKEN in .env"
+    for attempt in range(max_retries + 1):
+        resp = requests.get(
+            url,
+            params=params,
+            headers={"Accept": "application/json", "Authorization": f"Bearer {token}"},
+            timeout=15,
         )
-    if not resp.ok:
-        raise UpstoxError(f"Upstox API error {resp.status_code}: {resp.text[:200]}")
+        if resp.status_code == 401:
+            raise UpstoxError(
+                "Upstox access token expired or invalid — refresh UPSTOX_ACCESS_TOKEN in .env"
+            )
+        if resp.status_code == 429:
+            if attempt == max_retries:
+                raise UpstoxError(f"Upstox API error {resp.status_code}: {resp.text[:200]}")
+            retry_after = resp.headers.get("Retry-After")
+            wait = float(retry_after) if retry_after else (2 ** attempt)
+            time.sleep(min(wait, 30))
+            continue
+        if not resp.ok:
+            raise UpstoxError(f"Upstox API error {resp.status_code}: {resp.text[:200]}")
 
-    payload = resp.json()
-    if payload.get("status") != "success":
-        raise UpstoxError(f"Upstox API returned an error: {str(payload)[:200]}")
-    return payload
+        payload = resp.json()
+        if payload.get("status") != "success":
+            raise UpstoxError(f"Upstox API returned an error: {str(payload)[:200]}")
+        return payload
 
 
 def ist_date_string(dt=None):
@@ -365,11 +373,16 @@ def format_signal_message(result):
     )
 
 
-def scan_all(tickers=None, max_workers=6):
+def scan_all(tickers=None, max_workers=3):
     """Screen every ticker concurrently (thread pool — this is I/O bound).
     Defaults to the current full F&O universe (~200 stocks) if no list is
-    given. Returns (passing_results, error_messages). Passing results are
-    sorted by relative volume, descending, capped at 50."""
+    given. Lower concurrency (3) than you might expect — Upstox sits behind
+    Cloudflare, which rate-limits bursty request patterns from a single IP
+    more aggressively than the origin API itself does; combined with the
+    retry-with-backoff in _upstox_get, this keeps a fresh IP (e.g. a new
+    EC2 instance's first scan) from tripping Cloudflare's edge limits.
+    Returns (passing_results, error_messages). Passing results are sorted
+    by relative volume, descending, capped at 50."""
     tickers = tickers if tickers is not None else get_fno_tickers()
     results = []
     errors = []
