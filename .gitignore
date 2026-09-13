@@ -4,3 +4,4 @@ __pycache__/
 .venv/
 venv/
 fno_universe_cache.json
+alerted_signals.json
