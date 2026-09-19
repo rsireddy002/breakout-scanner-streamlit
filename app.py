@@ -16,6 +16,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from upstox_screener import (
+    IST,
     UpstoxError,
     format_signal_message,
     get_chart_data,
@@ -75,7 +76,7 @@ if scan_clicked:
             results, errors = scan_all(tickers)
         st.session_state.results = results
         st.session_state.scan_errors = errors
-        st.session_state.last_scanned = datetime.now().strftime("%I:%M:%S %p")
+        st.session_state.last_scanned = datetime.now(tz=IST).strftime("%I:%M:%S %p")
 
         new_alert_count = 0
         for r in results:
