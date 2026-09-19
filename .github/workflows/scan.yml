@@ -17,6 +17,20 @@ on:
 permissions:
   contents: write
 
+# Serializes runs of this workflow so two scans never overlap. The scan
+# itself only takes ~30-40s, well inside the 5-min cron cadence, but
+# GitHub's own docs note scheduled triggers can be delayed under load --
+# when that happens, a second run can start (and check out main) before
+# the first one has pushed its commit. That run then finishes and tries
+# to push against a main that's moved on underneath it, which is exactly
+# the "! [rejected] ... (fetch first)" failure this run hit. Queueing
+# runs instead of letting them race fixes the root cause; the retry loop
+# in the commit step below is belt-and-suspenders for any other race
+# (e.g. a manual push landing at the same moment).
+concurrency:
+  group: breakout-scan
+  cancel-in-progress: false
+
 jobs:
   scan:
     runs-on: ubuntu-latest
@@ -48,7 +62,26 @@ jobs:
           [ -f alerted_signals.json ] && git add -f alerted_signals.json
           if ! git diff --staged --quiet; then
             git commit -m "Update scan state [skip ci]"
-            git push
+            # Retry on a rejected push (remote moved since checkout) by
+            # rebasing onto the latest main and trying again, instead of
+            # failing the whole job over a race the concurrency group
+            # above should already make rare. --autostash isn't needed
+            # here (everything's already committed), but rebase can still
+            # fail if the SAME files changed upstream in a conflicting
+            # way -- that's a real conflict, not a race, so it's left to
+            # fail loudly after the retries rather than silently dropped.
+            for attempt in 1 2 3 4 5; do
+              if git push; then
+                break
+              fi
+              if [ "$attempt" -eq 5 ]; then
+                echo "::error::Push still failing after 5 attempts -- see above for the real error."
+                exit 1
+              fi
+              echo "Push rejected (attempt $attempt/5) -- pulling latest main and retrying..."
+              sleep $((RANDOM % 5 + 1))
+              git pull --rebase origin main
+            done
           else
             echo "Nothing to commit."
           fi
